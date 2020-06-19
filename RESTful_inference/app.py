@@ -5,7 +5,7 @@ import tools.utils as utils
 from tools.utils import get_top5, IMAGENET_MODELS
 import torchvision.models as models
 import torchvision.transforms as transforms
-import torchsummary
+import tools.torchsummary as torchsummary
 from PIL import Image
 from io import BytesIO
 from pynvml.smi import nvidia_smi
