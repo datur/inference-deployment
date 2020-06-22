@@ -1,6 +1,7 @@
-from flask import Flask, jsonify, request, Markup, redirect
+from flask import Flask, jsonify, request, Markup, redirect, abort
 import torch
-from time import perf_counter_ns, time
+from time import perf_counter_ns
+import time
 import tools.utils as utils
 from tools.utils import get_top5, IMAGENET_MODELS
 import torchvision.models as models
@@ -9,6 +10,7 @@ import tools.torchsummary as torchsummary
 from PIL import Image
 from io import BytesIO
 from pynvml.smi import nvidia_smi
+import json
 
 app = Flask(__name__)
 
@@ -50,13 +52,20 @@ def inference():
 
 
     """
-    request_recieved = perf_counter_ns()
-    # Convery bytes to image
-    # print(request.files["files"])
-    im = Image.open(BytesIO(request.files['files'].read()))
 
-    # image preprocessing: convert to tensor and add dimension to mimick batch
-    im_tensor = transforms.ToTensor()(im)
+    request_recieved = time.time()
+    
+    if request.data:
+        json_req = json.loads(request.data.decode('utf-8'))
+        im_tensor = torch.FloatTensor(json_req['image'])
+        
+    if request.files:
+        # Convery bytes to image
+        # print(request.files["files"])
+        im = Image.open(BytesIO(request.files['files'].read()))
+
+        # image preprocessing: convert to tensor and add dimension to mimick batch
+        im_tensor = transforms.ToTensor()(im)
 
     im_tensor = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])(im_tensor)
@@ -65,7 +74,7 @@ def inference():
     data = data.to(utils.DEVICE)
 
     # # run inference
-    perf_start = perf_counter_ns()
+    perf_start = time.time()
     
 
     # # inference here
@@ -74,17 +83,13 @@ def inference():
     if CUDA_AVAILABLE:
         post_inf_power = nvsmi.DeviceQuery('power.draw, utilization.gpu')
 
-    perf_end = perf_counter_ns()
+    perf_end = time.time()
 
     # return results as a json
     return jsonify({
         "result": {
+            "inference_time_ms": perf_end-perf_start,
             "prediction_raw": raw[0].tolist(),
-            "predicted_class": [top5_indicies[0][0].item()],
-            "confidence": [top5_values[0][0].item()],
-            "top5": [x.item() for x in top5_indicies[0]],
-            "top5_confidence": [x.item() for x in top5_values[0]],
-            "inference_time_ms": (perf_end-perf_start) / 10**6,
         },
         "meta": {
             "device": utils.DEVICE.type,
@@ -94,21 +99,26 @@ def inference():
                 "size_in_MB": net_info['total_size'],
                 "no_params": net_info['total_params'],
             },
-            "time_now": perf_counter_ns(),  # This is to enable calculation of latency
+            "time_response_sent": time.time(),  # This is to enable calculation of latency
             "time_request_recieved": request_recieved,
         }
     })
 
 
-@ app.route("/currentmodel")
+@ app.route("/model")
 def model():
     summary = torchsummary.summary(net, (3, 224, 224))
     summary['model_name'] = net.name
     return jsonify(summary)
 
+@app.route("/avail_models")
+def avail_models():
+    return jsonify({"available_models": [x for x in IMAGENET_MODELS.keys()]})
 
-@app.route("/changemodel/<model>", methods=["GET", "POST"])
+@app.route("/set_model/<model>", methods=["POST"])
 def change_model(model):
+    if request.json.get('api_key') != 'password':
+        abort(400)
     if model in IMAGENET_MODELS.keys():
         global net
         global net_info
